@@ -171,7 +171,7 @@ pub fn write_varuint(out: &mut Vec<u8>, mut v: u64) {
 pub fn write_varint_esri(out: &mut Vec<u8>, delta: i64) {
     // 拆分符号与幅度：负数写入 -delta（幅度）。
     let negative = delta < 0;
-    let mut mag = if negative { (delta as i128 * -1) as u64 } else { delta as u64 };
+    let mut mag = if negative { -(delta as i128) as u64 } else { delta as u64 };
     // 首 6 位
     let mut b = (mag & 0x3f) as u8;
     mag >>= 6;
@@ -199,7 +199,7 @@ pub fn write_varint_esri(out: &mut Vec<u8>, delta: i64) {
 #[allow(dead_code)]
 pub fn varint_len(v: i64) -> usize {
     let negative = v < 0;
-    let mut mag = if negative { (v as i128 * -1) as u64 } else { v as u64 };
+    let mut mag = if negative { -(v as i128) as u64 } else { v as u64 };
     mag >>= 6; // 首 6 位
     let mut n = 1;
     while mag != 0 {

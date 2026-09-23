@@ -241,6 +241,7 @@ impl GeodatabaseBuilder {
     }
 
     /// 添加一个数据对象（表/要素类）：写数据文件 + 更新两级目录。
+    #[allow(clippy::too_many_arguments)]
     fn add_item(
         &mut self,
         type_guid: [u8; 16],

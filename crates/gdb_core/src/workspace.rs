@@ -28,7 +28,7 @@ impl Geodatabase {
                 root.display()
             )));
         }
-        let items = enumerate(&root.to_path_buf())?;
+        let items = enumerate(root)?;
         Ok(Geodatabase {
             root: root.to_path_buf(),
             items,

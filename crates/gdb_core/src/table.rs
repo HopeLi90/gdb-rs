@@ -246,7 +246,7 @@ fn read_field_def(
                 let b = r.bytes(def_len)?;
                 let s = if def_len >= 2 && b.len() % 2 == 0 && looks_like_utf16(b) {
                     let units: Vec<u16> =
-                        b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                        b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
                     String::from_utf16_lossy(&units)
                 } else {
                     String::from_utf8_lossy(b).to_string()
@@ -290,7 +290,7 @@ fn read_field_def(
             if wkt_len > 0 {
                 let b = r.bytes(wkt_len)?;
                 let units: Vec<u16> =
-                    b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                    b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
                 def.srs_wkt = String::from_utf16_lossy(&units);
             }
             let gflags = r.u8()?;
@@ -348,7 +348,7 @@ fn read_field_def(
             let def_len = r.u8()? as usize;
             if def.editable && def_len > 0 {
                 let b = r.bytes(def_len)?;
-                def.default = parse_fixed_default(&b, ftype);
+                def.default = parse_fixed_default(b, ftype);
             }
         }
     }
@@ -433,9 +433,9 @@ fn read_row_slots(directory: &Path, file_id: u32) -> Result<Vec<(u64, u64)>> {
 
 fn read_uint_le(buf: &[u8], width: usize) -> u64 {
     let mut v: u64 = 0;
-    for i in 0..width {
+    (0..width).for_each(|i| {
         v |= (buf[i] as u64) << (8 * i);
-    }
+    });
     v
 }
 
@@ -578,7 +578,7 @@ fn decode_field_value(
                 }
             } else {
                 let units: Vec<u16> = bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>().0.iter()
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect();
                 let s = String::from_utf16_lossy(&units);
@@ -648,8 +648,7 @@ fn serialize_table(table: &Table) -> Result<(Vec<u8>, Vec<u8>)> {
 
     // 3) 组装 .gdbtable
     let field_desc_offset: u64 = 40;
-    let mut table_bytes: Vec<u8> = Vec::new();
-    table_bytes.resize(40, 0);
+    let mut table_bytes: Vec<u8> = vec![0; 40];
     // version
     table_bytes[0..4].copy_from_slice(&(table.version as i32).to_le_bytes());
     if table.version == 3 {
@@ -693,7 +692,7 @@ fn serialize_table(table: &Table) -> Result<(Vec<u8>, Vec<u8>)> {
         slot_offsets[*slot as usize] = *off;
     }
     let width = offset_byte_width_for(&slot_offsets);
-    let n1024blocks = (slot_count as usize + 1023) / 1024;
+    let n1024blocks = (slot_count as usize).div_ceil(1024);
     let mut tablx = Vec::new();
     tablx.extend_from_slice(&3i32.to_le_bytes());
     tablx.extend_from_slice(&(n1024blocks as i32).to_le_bytes());
@@ -713,7 +712,7 @@ fn offset_byte_width_for(offsets: &[u64]) -> usize {
     let max = offsets.iter().copied().max().unwrap_or(0);
     if max <= 0xFFFF_FFFF {
         4
-    } else if max <= 0xFFFF_FFFF_FF {
+    } else if max <= 0x00FF_FFFF_FFFF {
         5
     } else {
         6

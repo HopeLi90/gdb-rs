@@ -15,7 +15,6 @@
 //!   PhysicalName 大小写可能与目录记录不一致，做小写兜底匹配。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use crate::error::{GdbError, Result};
 use crate::field::GeometryType;
@@ -66,7 +65,7 @@ fn field_int(v: &FieldValue) -> i64 {
 }
 
 /// 枚举 .gdb 目录中的所有用户对象（要素类 / 表 / 要素数据集）。
-pub fn enumerate(directory: &PathBuf) -> Result<Vec<CatalogItem>> {
+pub fn enumerate(directory: &std::path::Path) -> Result<Vec<CatalogItem>> {
     // 1) SystemCatalog：内部表名 → 文件号。
     let catalog = Table::open(directory, 1)?;
     let cat_id_i = catalog

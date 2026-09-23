@@ -41,21 +41,21 @@ fn run(args: &[String]) -> Result<(), String> {
     match cmd {
         "sample" => {
             let dir = expect_arg(args, 2, "gdb_dir")?;
-            cmd_sample(&dir)
+            cmd_sample(dir)
         }
         "list" => {
             let dir = expect_arg(args, 2, "gdb_dir")?;
-            cmd_list(&dir)
+            cmd_list(dir)
         }
         "describe" => {
             let dir = expect_arg(args, 2, "gdb_dir")?;
             let name = expect_arg(args, 3, "name")?;
-            cmd_describe(&dir, &name)
+            cmd_describe(dir, name)
         }
         "read" => {
             let dir = expect_arg(args, 2, "gdb_dir")?;
             let name = expect_arg(args, 3, "name")?;
-            cmd_read(&dir, &name)
+            cmd_read(dir, name)
         }
         "update-attr" => {
             let dir = expect_arg(args, 2, "gdb_dir")?;
@@ -63,7 +63,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let oid = expect_arg(args, 4, "oid")?.parse::<u64>().map_err(|_| "oid 必须为整数".to_string())?;
             let field = expect_arg(args, 5, "field")?;
             let value = expect_arg(args, 6, "value")?;
-            cmd_update_attr(&dir, &name, oid, &field, &value)
+            cmd_update_attr(dir, name, oid, field, value)
         }
         "update-geom" => {
             let dir = expect_arg(args, 2, "gdb_dir")?;
@@ -71,7 +71,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let oid = expect_arg(args, 4, "oid")?.parse::<u64>().map_err(|_| "oid 必须为整数".to_string())?;
             let x = expect_arg(args, 5, "x")?.parse::<f64>().map_err(|_| "x 必须为浮点数".to_string())?;
             let y = expect_arg(args, 6, "y")?.parse::<f64>().map_err(|_| "y 必须为浮点数".to_string())?;
-            cmd_update_geom(&dir, &name, oid, x, y)
+            cmd_update_geom(dir, name, oid, x, y)
         }
         "-h" | "--help" | "help" => {
             print_help();
@@ -272,7 +272,7 @@ fn geom_name(g: GeometryType) -> &'static str {
         GeometryType::Envelope => "Envelope",
         GeometryType::MultiPatch => "MultiPatch",
         GeometryType::None => "None",
-        GeometryType::Other(c) => return Box::leak(format!("Other({c})").into_boxed_str()),
+        GeometryType::Other(c) => Box::leak(format!("Other({c})").into_boxed_str()),
     }
 }
 
@@ -296,7 +296,7 @@ fn cmd_describe(dir: &str, name: &str) -> Result<(), String> {
 
 fn describe_fields(fields: &[gdb_core::field::FieldDef]) {
     println!("字段 ({}):", fields.len());
-    println!("  {:>3}  {:<20} {:<10} {}", "idx", "name", "type", "nullable");
+    println!("  {:>3}  {:<20} {:<10} nullable", "idx", "name", "type");
     for (i, f) in fields.iter().enumerate() {
         println!(
             "  {:>3}  {:<20} {:<10} {}",
@@ -325,7 +325,7 @@ fn type_name(t: FieldType) -> &'static str {
         FieldType::Int64 => "int64",
         FieldType::Date => "date",
         FieldType::Time => "time",
-        FieldType::Other(c) => return Box::leak(format!("other({c})").into_boxed_str()),
+        FieldType::Other(c) => Box::leak(format!("other({c})").into_boxed_str()),
     }
 }
 
