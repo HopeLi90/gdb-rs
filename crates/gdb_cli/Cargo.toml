@@ -1,0 +1,13 @@
+[package]
+name = "gdb_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gdb"
+path = "src/main.rs"
+
+# CLI 使用标准库手动解析参数，无外部依赖。
+[dependencies]
+gdb_core = { path = "../gdb_core" }

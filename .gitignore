@@ -1,0 +1,12 @@
+# Rust / Cargo 构建产物
+/target
+
+# 交叉编译交付产物
+/dist
+
+/fixtures
+/test.gdb
+
+# 编辑器 / 系统临时文件
+*.swp
+.DS_Store
