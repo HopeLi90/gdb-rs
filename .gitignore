@@ -4,7 +4,7 @@
 # 交叉编译交付产物
 /dist
 
-**/test.gdb/
+**/test.gdb
 
 # 编辑器 / 系统临时文件
 *.swp
