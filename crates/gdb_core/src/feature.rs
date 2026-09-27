@@ -73,6 +73,13 @@ impl Feature {
         self.row.store();
     }
 
+    /// 删除本要素（对应 ArcEngine `IFeature.Delete`），返回被删要素的 OBJECTID。
+    ///
+    /// 采用保槽删除，其余要素 OID 不变；删除后本句柄失效。
+    pub fn delete(&self) -> Result<u64> {
+        self.row.delete()
+    }
+
     /// 底层行。
     pub fn row(&self) -> &Row {
         &self.row

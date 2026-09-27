@@ -6,14 +6,27 @@
 ```
 Geodatabase（工作空间）
   ├─ FeatureClass / TableHandle / FeatureDataset
-  │     └─ Cursor(Search|Update|Insert) ──> Row / Feature ──> store()
-  └─ EditSession（start / start_operation / stop_operation / commit / abort）
+  │     └─ Cursor(Search|Update|Insert) ──> Row / Feature ──> store() / delete()
+  ├─ QueryFilter（All | ByOid | ByOids | Where | Spatial | Combined）
+  │     ├─ WhereClause（属性条件解析器）
+  │     └─ SpatialFilter / SpatialRel（精确几何过滤）
+  └─ EditSession（start / start_operation / stop_operation / commit / abort 回滚）
 ```
 
 ## 能力
 
 - **正确解析三类对象**：独立要素类、独立数据表、要素数据集中的要素类
-- **按 OBJECTID 更新属性与几何**（点/多点/折线/面）
+- **完整增删改（CRUD）**：
+  - 新增：`create_feature` / `create_row`（自动分配 OBJECTID）
+  - 查询：`QueryFilter` 支持 `All` / `ByOid` / `ByOids` / `Where`（属性条件）/ `Spatial`（精确空间过滤）/ `Combined`
+  - 更新：按条件（属性/空间）批量更新，经 Update 游标 + `store()`
+  - 删除：`delete_feature` / `delete_row` / `delete_searched_rows` / `delete_rows`（**保槽删除**，其余 OID 不变）
+  - 编辑会话：`start_operation` / `stop_operation` 嵌套分组 + `abort()` 快照回滚
+- `WhereClause` 手写解析器：支持 `= != > >= < <= AND OR NOT (...) IS [NOT] NULL [NOT] IN`、
+  单引号字符串（含 `''` 转义与中文）、带引号字段名（`"Shape_Length"`）、数字字面量
+- **精确空间过滤**（`ISpatialFilter` 风格）：`Intersects` / `Contains` / `Within` /
+  `EnvelopeIntersects`；点在环内（射线法）、线段相交（含共线/端点）、面-面相交，
+  洞按奇偶规则正确处理（非 bbox 近似）
 - 解析 `a00000001` 系统目录（`GDB_SystemCatalog`），按 `Path` / `DatasetSubtype2` /
   `Definition` XML 自动分类对象类型
 - `.gdbtable` 行 blob 编解码：定长/变长字段、null 位图、按字段顺序的偏移数组
@@ -27,18 +40,23 @@ crates/
     src/
       workspace.rs       Geodatabase：打开 .gdb、列举/打开要素类·表·数据集
       catalog.rs         解析系统目录，分类独立表/独立要素类/数据集内要素类
-      feature_class.rs   FeatureClass / TableHandle：schema 与游标工厂
+      feature_class.rs   FeatureClass / TableHandle：schema、游标工厂、批量增删
       feature_dataset.rs FeatureDataset：数据集容器
-      cursor.rs          Cursor：Search / Update / Insert 遍历与更新
-      row.rs / feature.rs Row / Feature：取值、赋值、store()
-      edit.rs            EditSession：编辑会话与提交
-      table.rs           .gdbtable / .gdbtablx 解析与回写
-      geometry/mod.rs    几何编解码
+      query_filter.rs    QueryFilter / WhereClause / SpatialFilter（过滤条件）
+      cursor.rs          Cursor：Search / Update / Insert 遍历、更新、插入、删除
+      row.rs / feature.rs Row / Feature：取值、赋值、store()、delete()
+      edit.rs            EditSession：编辑会话、操作栈、提交与回滚
+      table.rs           .gdbtable / .gdbtablx 解析、回写、行删除与快照
+      geometry/
+        mod.rs           几何编解码
+        predicate.rs     精确空间谓词（相交/包含/被包含）
       field.rs           字段类型、schema、精度网格
       value.rs           FieldValue、OLE 日期、UUID
       io.rs              小端读写、LEB128 varint、UTF-16
       catalog / xml / error / builder / lib
     tests/
+      real_gdb_test.rs   真实 .gdb 金标准测试（7 个）
+      crud_test.rs       增删改集成测试（18 个，含保槽 OID 稳定性）
       roundtrip_test.rs  读写闭环集成测试（2 个）
   gdb_cli/             命令行工具（bin: gdb）
 build-windows.sh       一键交叉编译 Windows x64 exe（Docker + USTC 镜像）
@@ -101,16 +119,29 @@ gdb list    /path/to/demo.gdb
 # 查看 schema 与几何类型
 gdb describe /path/to/demo.gdb Capitals
 
-# 逐行读取（要素类额外输出几何 WKT 摘要）
+# 逐行读取（可选 --where 条件；要素类额外输出几何 WKT 摘要）
 gdb read    /path/to/demo.gdb Cities_Tbl
-gdb read    /path/to/demo.gdb Regions
+gdb read    /path/to/demo.gdb 地块 --where "Shape_Length > 300"
 
-# 按 OBJECTID 更新属性
+# 插入（要素类可用 --point / --ring 附带几何）
+gdb insert /path/to/demo.gdb 地块 --set "BH=编号9" \
+    --ring "40538389.49,3044658.394;40538499.68,3044695.035;40538449.01,3044778.332;40538389.49,3044742.125;40538389.49,3044658.394"
+
+# 按条件批量更新字段（--set 可重复）
+gdb update /path/to/demo.gdb 地块 --where "BH = '编号2'" --set "BH=编号2-改"
+
+# 按条件/OBJECTID 批量删除（--dry-run 只预览命中数）
+gdb delete /path/to/demo.gdb 地块 --where "BH = '编号1'" --dry-run
+gdb delete /path/to/demo.gdb 地块 --where "BH = '编号1'"
+gdb delete /path/to/demo.gdb 地块 --oids 3,5
+
+# 兼容：按 OBJECTID 更新属性 / 点几何
 gdb update-attr /path/to/demo.gdb Cities_Tbl 1 Name Beijing2
-
-# 按 OBJECTID 更新点几何
 gdb update-geom /path/to/demo.gdb Capitals 1 121.0 31.0
 ```
+
+> 注意 shell 引号：where 子句中的单引号需用双引号包裹整个参数，
+> 例如 `--where "BH = '编号1'"`。
 
 ## 库 API 示例
 
@@ -125,17 +156,34 @@ for fc in gdb.feature_classes() {
     println!("{} [{}]", fc.name, fc.geometry_type);
 }
 
-// 按 OBJECTID 更新属性 + 几何（编辑会话）
+// 编辑会话 + 操作分组（可回滚）
 let session = gdb.edit_session();
 session.start();
-let fc = session.open_feature_class(&gdb, "Capitals")?;
-let mut cur = fc.update(&QueryFilter::ByOid(1))?;
-let f = cur.next_feature().unwrap();
-f.set_by_name("Name", FieldValue::Text("NewCapital".into()))?;
-f.set_geometry(Geometry::Point(Point { x: 121.0, y: 31.0 }))?;
-f.store();
-cur.update(f.row())?;
-session.commit()?;
+session.start_operation()?;
+let fc = session.open_feature_class(&gdb, "地块")?;
+
+// 按属性条件批量更新
+let filter = QueryFilter::where_clause("BH = '编号1' OR BH = '编号2'")?;
+let mut cur = fc.update(&filter)?;
+while let Some(f) = cur.next_feature() {
+    f.set_by_name("BH", FieldValue::Text("已处理".into()))?;
+    f.store();
+    cur.update(f.row())?;
+}
+
+// 按条件批量删除
+let n = fc.delete_searched_rows(&QueryFilter::where_clause("BH = '废弃'")?)?;
+println!("删除 {n} 个要素");
+
+// 新建要素（自动分配 OBJECTID）
+let oid = fc.create_feature(vec![
+    FieldValue::ObjectId(0),
+    FieldValue::Geometry(Geometry::Point(Point { x: 116.4, y: 39.9 })),
+    FieldValue::Text("新要素".into()),
+])?;
+
+session.stop_operation()?;
+session.commit()?;   // 写盘；失败前可 session.abort() 回滚内存改动
 ```
 
 ## 文件格式要点
@@ -148,5 +196,12 @@ session.commit()?;
 ## 限制
 
 - 几何主要为 2D 点/多点/线/面（Z/M 解析保留但在写入路径未启用）
-- 针对 ArcGIS 生产的真实 `.gdb`（大偏移宽度 5/6 字节、UUID/XML 字段）为后续增强项
-- 未与 GDAL 交叉校验（离线环境）
+- **删除采用「保槽删除」**：被删行的槽位在 `.gdbtablx` 中置为 `offset=0`（空槽），
+  其余要素 OBJECTID（= 槽位 + 1）保持不变，与 ArcGIS 语义一致。本实现**不写回**
+  `aNNNNNNNN.freelist`，因此槽号不复用、文件不随删除缩小（仅影响空间效率，不影响正确性）。
+- **空间过滤为精确几何判定**（点在环内 / 线段相交 / 面-面相交，洞按奇偶规则），
+  但仅支持 XY 二维、不处理 Z/M 与曲线段几何；精度容差为绝对量级 `1e-9`。
+- `abort()` 的内存回滚依赖 `start_operation()` 建立的快照；未开启操作时 `abort()`
+  退化为「不写盘」（与 ArcEngine `AbortEditOperation` 语义一致）。
+- **未与 GDAL 交叉校验**（离线环境）；金标准为真实 ArcGIS `.gdb` 的逐字节逆向 +
+  行内 `Shape_Length`（几何周长）交叉验证。

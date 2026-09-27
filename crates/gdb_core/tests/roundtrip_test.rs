@@ -15,7 +15,7 @@ fn sample_dir() -> PathBuf {
     dir
 }
 
-fn build(dir: &std::path::Path) {
+fn build(dir: &PathBuf) {
     let grid = PrecisionGrid::default();
     let mut b = GeodatabaseBuilder::create(dir).unwrap();
 

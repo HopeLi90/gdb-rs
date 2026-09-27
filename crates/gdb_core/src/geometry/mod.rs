@@ -27,6 +27,9 @@ use crate::error::{GdbError, Result};
 use crate::field::PrecisionGrid;
 use crate::io::{Reader, write_varint_esri, write_varuint};
 
+/// 二维几何精确谓词（点/线/面相交、包含、被包含），服务于空间过滤。
+pub mod predicate;
+
 /// SHPT 形状码（`gtype` 低 8 位，与 GDAL `ogrpgeogeometry.h` 一致）。
 pub mod shpt {
     pub const NULL: u32 = 0;

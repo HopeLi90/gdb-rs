@@ -1,5 +1,5 @@
 //! 行（`Row`）：按索引/名称取值与赋值。通过共享 `Rc<RefCell<Table>>` 实现
-//! ArcEngine 风格的就地修改与 `store()`。
+//! ArcEngine 风格的就地修改、`store()` 与 `delete()`。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -25,22 +25,34 @@ impl Row {
         self.index
     }
 
-    /// 该行的 OBJECTID。
+    /// 该行是否仍存在于表中（删除后其下标可能失效）。
+    pub fn is_valid(&self) -> bool {
+        let t = self.table.borrow();
+        self.index < t.rows.len()
+    }
+
+    /// 该行的 OBJECTID（行已失效时返回 0）。
     pub fn object_id(&self) -> u64 {
         let t = self.table.borrow();
         let oi = match t.schema.objectid_index() {
             Some(i) => i,
             None => return 0,
         };
-        match &t.rows[self.index][oi] {
-            FieldValue::ObjectId(v) => *v,
+        match t.rows.get(self.index).and_then(|r| r.get(oi)) {
+            Some(FieldValue::ObjectId(v)) => *v,
             _ => 0,
         }
     }
 
-    /// 按字段索引取值（克隆）。
+    /// 按字段索引取值（克隆）；行已失效时返回 `FieldValue::Null`。
     pub fn get(&self, i: usize) -> FieldValue {
-        self.table.borrow().rows[self.index][i].clone()
+        self.table
+            .borrow()
+            .rows
+            .get(self.index)
+            .and_then(|r| r.get(i))
+            .cloned()
+            .unwrap_or(FieldValue::Null)
     }
 
     /// 按字段名取值。
@@ -50,12 +62,21 @@ impl Row {
             .schema
             .field_index(name)
             .ok_or_else(|| GdbError::InvalidField(name.to_string()))?;
-        Ok(t.rows[self.index][i].clone())
+        Ok(t.rows
+            .get(self.index)
+            .and_then(|r| r.get(i))
+            .cloned()
+            .unwrap_or(FieldValue::Null))
     }
 
     /// 按字段索引赋值（立即写入内存中的表）。
     pub fn set(&self, i: usize, v: FieldValue) {
-        self.table.borrow_mut().rows[self.index][i] = v;
+        let mut t = self.table.borrow_mut();
+        if let Some(row) = t.rows.get_mut(self.index) {
+            if i < row.len() {
+                row[i] = v;
+            }
+        }
     }
 
     /// 按字段名赋值。
@@ -65,15 +86,31 @@ impl Row {
             .schema
             .field_index(name)
             .ok_or_else(|| GdbError::InvalidField(name.to_string()))?;
-        t.rows[self.index][i] = v;
+        if let Some(row) = t.rows.get_mut(self.index) {
+            row[i] = v;
+        }
         Ok(())
     }
 
     /// 写回（内存中修改已即时生效，此处为兼容 ArcEngine `IRow.Store` 语义的空操作）。
     pub fn store(&self) {}
 
-    /// 取出该行的全部值副本。
+    /// 删除本行（对应 ArcEngine `IRow.Delete`），返回被删行的 OBJECTID。
+    ///
+    /// 采用**保槽删除**：其余行的 OBJECTID 保持不变。删除后本 `Row` 句柄失效
+    /// （`is_valid()` 返回 false）；若在游标中迭代删除，请改用
+    /// [`crate::cursor::Cursor::delete_row`] 以同步维护游标状态。
+    pub fn delete(&self) -> Result<u64> {
+        self.table.borrow_mut().delete_row(self.index)
+    }
+
+    /// 取出该行的全部值副本；行已失效时返回空 Vec。
     pub fn values(&self) -> Vec<FieldValue> {
-        self.table.borrow().rows[self.index].clone()
+        self.table
+            .borrow()
+            .rows
+            .get(self.index)
+            .cloned()
+            .unwrap_or_default()
     }
 }

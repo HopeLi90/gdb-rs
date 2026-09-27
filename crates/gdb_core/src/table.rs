@@ -51,6 +51,14 @@ pub struct Table {
     pub slot_count: u64,
 }
 
+/// 表行数据的快照（仅包含可变的行状态，用于编辑会话回滚）。
+#[derive(Debug, Clone)]
+pub(crate) struct TableSnapshot {
+    pub rows: Vec<Vec<FieldValue>>,
+    pub row_slots: Vec<u64>,
+    pub slot_count: u64,
+}
+
 impl Table {
     /// 打开并解析一个 .gdbtable（配合同名的 .gdbtablx）。
     pub fn open(directory: &Path, file_id: u32) -> Result<Table> {
@@ -137,6 +145,95 @@ impl Table {
         self.rows
             .iter()
             .position(|r| matches!(r[oi], FieldValue::ObjectId(v) if v == oid))
+    }
+
+    /// 返回某行的 OBJECTID（按下标）。
+    pub fn oid_at(&self, index: usize) -> Option<u64> {
+        let oi = self.schema.objectid_index()?;
+        self.rows.get(index).and_then(|r| match r[oi] {
+            FieldValue::ObjectId(v) => Some(v),
+            _ => None,
+        })
+    }
+
+    /// 删除指定下标的行，返回被删行的 OBJECTID。
+    ///
+    /// **保槽删除**：`rows` 与 `row_slots` 同步移除该行，序列化时该槽位被写为
+    /// `offset = 0`（空槽），因此其余行的 OBJECTID（= 槽位 + 1）保持不变。
+    /// 这也要求两者必须同步移除——否则 `serialize_table` 会退化重排槽位、导致 OID 漂移。
+    pub fn delete_row(&mut self, index: usize) -> Result<u64> {
+        if index >= self.rows.len() {
+            return Err(GdbError::Format(format!(
+                "删除行下标越界: {index} (共 {} 行)",
+                self.rows.len()
+            )));
+        }
+        let oid = self.oid_at(index).unwrap_or(index as u64 + 1);
+        self.rows.remove(index);
+        if index < self.row_slots.len() {
+            self.row_slots.remove(index);
+        }
+        debug_assert_eq!(self.rows.len(), self.row_slots.len());
+        // slot_count 无需修改：serialize 依据 row_slots 自算槽位总数。
+        Ok(oid)
+    }
+
+    /// 批量删除多个下标对应的行，返回实际删除数。
+    ///
+    /// 内部按从大到小删除以避免索引位移；越界下标将被忽略。
+    pub fn delete_rows(&mut self, indices: &[usize]) -> Result<usize> {
+        let mut sorted: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|&i| i < self.rows.len())
+            .collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let n = sorted.len();
+        for idx in sorted.into_iter().rev() {
+            // 此处 idx 必在范围内（已过滤），且倒序删除不影响更小下标。
+            self.rows.remove(idx);
+            if idx < self.row_slots.len() {
+                self.row_slots.remove(idx);
+            }
+        }
+        debug_assert_eq!(self.rows.len(), self.row_slots.len());
+        Ok(n)
+    }
+
+    /// 按 OBJECTID 删除一行；未找到返回 `Ok(false)`。
+    pub fn delete_row_by_oid(&mut self, oid: u64) -> Result<bool> {
+        match self.row_index_by_oid(oid) {
+            Some(idx) => {
+                self.delete_row(idx)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// 删除全部行，返回删除数。
+    pub fn delete_all_rows(&mut self) -> Result<usize> {
+        let n = self.rows.len();
+        self.rows.clear();
+        self.row_slots.clear();
+        Ok(n)
+    }
+
+    /// 生成行数据快照（供编辑会话回滚）。
+    pub(crate) fn snapshot(&self) -> TableSnapshot {
+        TableSnapshot {
+            rows: self.rows.clone(),
+            row_slots: self.row_slots.clone(),
+            slot_count: self.slot_count,
+        }
+    }
+
+    /// 由快照恢复行数据（仅还原可变的行状态，不触碰 schema）。
+    pub(crate) fn restore(&mut self, snap: &TableSnapshot) {
+        self.rows = snap.rows.clone();
+        self.row_slots = snap.row_slots.clone();
+        self.slot_count = snap.slot_count;
     }
 
     /// 序列化并写回磁盘（.gdbtable 与 .gdbtablx）。
@@ -246,7 +343,7 @@ fn read_field_def(
                 let b = r.bytes(def_len)?;
                 let s = if def_len >= 2 && b.len() % 2 == 0 && looks_like_utf16(b) {
                     let units: Vec<u16> =
-                        b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                        b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
                     String::from_utf16_lossy(&units)
                 } else {
                     String::from_utf8_lossy(b).to_string()
@@ -290,7 +387,7 @@ fn read_field_def(
             if wkt_len > 0 {
                 let b = r.bytes(wkt_len)?;
                 let units: Vec<u16> =
-                    b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                    b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
                 def.srs_wkt = String::from_utf16_lossy(&units);
             }
             let gflags = r.u8()?;
@@ -348,7 +445,7 @@ fn read_field_def(
             let def_len = r.u8()? as usize;
             if def.editable && def_len > 0 {
                 let b = r.bytes(def_len)?;
-                def.default = parse_fixed_default(b, ftype);
+                def.default = parse_fixed_default(&b, ftype);
             }
         }
     }
@@ -433,9 +530,9 @@ fn read_row_slots(directory: &Path, file_id: u32) -> Result<Vec<(u64, u64)>> {
 
 fn read_uint_le(buf: &[u8], width: usize) -> u64 {
     let mut v: u64 = 0;
-    (0..width).for_each(|i| {
+    for i in 0..width {
         v |= (buf[i] as u64) << (8 * i);
-    });
+    }
     v
 }
 
@@ -578,7 +675,7 @@ fn decode_field_value(
                 }
             } else {
                 let units: Vec<u16> = bytes
-                    .as_chunks::<2>().0.iter()
+                    .chunks_exact(2)
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect();
                 let s = String::from_utf16_lossy(&units);
@@ -648,7 +745,8 @@ fn serialize_table(table: &Table) -> Result<(Vec<u8>, Vec<u8>)> {
 
     // 3) 组装 .gdbtable
     let field_desc_offset: u64 = 40;
-    let mut table_bytes: Vec<u8> = vec![0; 40];
+    let mut table_bytes: Vec<u8> = Vec::new();
+    table_bytes.resize(40, 0);
     // version
     table_bytes[0..4].copy_from_slice(&(table.version as i32).to_le_bytes());
     if table.version == 3 {
@@ -692,7 +790,7 @@ fn serialize_table(table: &Table) -> Result<(Vec<u8>, Vec<u8>)> {
         slot_offsets[*slot as usize] = *off;
     }
     let width = offset_byte_width_for(&slot_offsets);
-    let n1024blocks = (slot_count as usize).div_ceil(1024);
+    let n1024blocks = (slot_count as usize + 1023) / 1024;
     let mut tablx = Vec::new();
     tablx.extend_from_slice(&3i32.to_le_bytes());
     tablx.extend_from_slice(&(n1024blocks as i32).to_le_bytes());
@@ -712,7 +810,7 @@ fn offset_byte_width_for(offsets: &[u64]) -> usize {
     let max = offsets.iter().copied().max().unwrap_or(0);
     if max <= 0xFFFF_FFFF {
         4
-    } else if max <= 0x00FF_FFFF_FFFF {
+    } else if max <= 0xFFFF_FFFF_FF {
         5
     } else {
         6
